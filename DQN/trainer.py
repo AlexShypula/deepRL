@@ -97,6 +97,7 @@ class DQN_Trainer:
         next_states = torch.cat([observation.get("next_state") for observation in sample], dim = 0).to(self.device)
         actions = torch.tensor([observation.get("action") for observation in sample]).unsqueeze(1).to(self.device)
         rewards = torch.tensor([observation.get("reward") for observation in sample]).unsqueeze(1).to(self.device)
+        is_finished_mask = (torch.tensor([observation.get("is_finished") for observation in sample])==False).byte().unsqueeze(1).to(self.device)
 
         q_fitted = self.q_net(states)
         # max returns a tuple of the max and the indices of the max values; need to also add back the column dim
@@ -107,8 +108,8 @@ class DQN_Trainer:
         avg_tgt_val = q_next_fitted.mean().item()
 
         q_fitted_for_actions = q_fitted*action_mask
-        q_approx = rewards + self.gamma * q_next_fitted
-        q_approx_for_actions = q_approx.repeat(1, q_fitted.size(1))*action_mask
+        q_approx = rewards + self.gamma * (q_next_fitted * is_finished_mask) # mask off any is_finished
+        q_approx_for_actions = (q_approx.repeat(1, q_fitted.size(1))*action_mask).detach()
 
         loss = self.loss(q_fitted_for_actions, q_approx_for_actions)
         self.optimizer.zero_grad()
@@ -134,9 +135,9 @@ class DQN_Trainer:
         trailing_reward = np.mean(self.rewards_buffer)
 
         self.q_net_sampler.sample(self.q_net)
-        self.tgt_net_sampler.sample(self.target_q_net)
+        # self.tgt_net_sampler.sample(self.target_q_net)
         q_net_grad_var = self.q_net_sampler.get_running_var()
-        tgt_net_grad_var = self.tgt_net_sampler.get_running_var()
+        # tgt_net_grad_var = self.tgt_net_sampler.get_running_var()
 
         self.writer.add_scalar('Train/loss', loss, self.update_no)
         self.writer.add_scalar('Train/q_value', q_value, self.update_no)
@@ -146,7 +147,7 @@ class DQN_Trainer:
         self.writer.add_scalar('Train/trailing_reward', trailing_reward, self.update_no)
 
         self.writer.add_scalar('Train/q_net_grad_var', q_net_grad_var, self.update_no)
-        self.writer.add_scalar('Train/tgt_net_grad_var', tgt_net_grad_var, self.update_no)
+        # self.writer.add_scalar('Train/tgt_net_grad_var', tgt_net_grad_var, self.update_no)
 
         self.update_no += 1
 
@@ -171,7 +172,7 @@ class DQN_Trainer:
 
     def _update_target_q_net(self):
         for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
-            target_param.data.copy_(self.polyak_factor * param.data + target_param.data * (1.0 - self.polyak_factor))
+            target_param.data.copy_((1-self.polyak_factor) * param.data + target_param.data * (self.polyak_factor))
 
     def train(self, print_every = 100):
         for episode_no in tqdm(range(1, self.n_episodes + 1), position = 0, smoothing = 0):
@@ -182,8 +183,9 @@ class DQN_Trainer:
                 self.rewards_buffer.append(reward)
                 self.replay_buffer.append({"state": state,
                                            "action": action,
-                                           "reward": reward if not is_finished else -reward,
-                                           "next_state": next_state})
+                                           "reward": reward, #if not is_finished else -reward,
+                                           "next_state": next_state,
+                                           "is_finished": is_finished})
                 loss, avg_q_val, avg_tgt_val = self._update_q_net()
                 self._step_log(loss, avg_q_val, avg_tgt_val)
 

@@ -1,4 +1,4 @@
-from DQN.model import DQN_MLP
+from DQN.model import DQN_MLP, DQN_MLP_2
 from DQN.trainer import DQN_Trainer
 import torch.optim as optim
 from dataclasses import dataclass, field
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     # print(parser.parse_args())
     # args = parser.parse_args()
     # run_dqn_cartpole(**vars(args))
-	q_net = DQN_MLP(hidden_dim=64)
+	q_net = DQN_MLP_2(hidden_dim=128)
 	optimizer = optim.Adam(q_net.parameters(),
 						   lr=1e-3,
 						   betas=(0.9, 0.999),
@@ -57,9 +57,11 @@ if __name__ == "__main__":
 
 	trainer = DQN_Trainer(q_net=q_net,
 						  polyak_factor=0.999,
-						  batch_size=32,
+						  n_episodes=50000,
+						  batch_size=128,
 						  replay_buffer_size=10000,
 						  optimizer=optimizer,
-						  metrics_buffer_size=400,
-						  n_episodes_annealing=2000)
+						  metrics_buffer_size=200,
+						  n_episodes_annealing=8000,
+						  epsilon_end=0.05)
 	trainer.train(print_every=100)
