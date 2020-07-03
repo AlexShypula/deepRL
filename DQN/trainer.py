@@ -97,6 +97,9 @@ class DQN_Trainer:
         next_states = torch.cat([observation.get("next_state") for observation in sample], dim = 0).to(self.device)
         actions = torch.tensor([observation.get("action") for observation in sample]).unsqueeze(1).to(self.device)
         rewards = torch.tensor([observation.get("reward") for observation in sample]).unsqueeze(1).to(self.device)
+
+
+
         is_finished_mask = (torch.tensor([observation.get("is_finished") for observation in sample])==False).byte().unsqueeze(1).to(self.device)
 
         q_fitted = self.q_net(states)
@@ -171,6 +174,10 @@ class DQN_Trainer:
             return False
 
     def _update_target_q_net(self):
+        # if (self.update_no + 1) % 5000 == 0:
+        #     for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
+        #         target_param.data.copy_(param.data)
+
         for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
             target_param.data.copy_((1-self.polyak_factor) * param.data + target_param.data * (self.polyak_factor))
 

@@ -56,8 +56,8 @@ if __name__ == "__main__":
 						   amsgrad=False)
 
 	trainer = DQN_Trainer(q_net=q_net,
-						  polyak_factor=0.999,
-						  n_episodes=50000,
+						  polyak_factor=0.9999,
+						  n_episodes=20000,
 						  batch_size=128,
 						  replay_buffer_size=10000,
 						  optimizer=optimizer,
