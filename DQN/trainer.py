@@ -6,26 +6,35 @@ from collections import deque
 import torch
 torch.manual_seed(42)
 import torch.nn as nn
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from copy import deepcopy
 import random
-from DQN.utils import Simulation, NetworkParamSampler
+from DQN.utils import Simulation, NetworkParamSampler, render_q_net
 from torch.utils.tensorboard import SummaryWriter
 from itertools import islice
+from multiprocessing import Process, Event
+from copy import deepcopy
 
 
 class DQN_Trainer:
     def __init__(self, q_net,
                  optimizer,
-                 n_episodes=4000,
-                 n_episodes_annealing = 3000,
+                 double_q_flag=True,
+                 max_episodes=4000,
+                 max_steps = 50000,
+                 learning_starts=2000,
+                 online_update_every = 1,
+                 target_update_every = 5000,
+                 percent_annealing = 0.1,
                  max_t=200,
-                 replay_buffer_size = 500,
+                 replay_buffer_size = 10000,
                  batch_size=16,
                  gamma = 0.99,
                  epsilon_start=1.0,
                  epsilon_end=0.1,
                  polyak_factor = 0.999,
+                 update_polyak_flag=False,
+                 update_tgt_net_steps = 10000,
                  device = "cpu",
                  environmnet = "CartPole-v0",
                  loss = "mse",
@@ -37,31 +46,39 @@ class DQN_Trainer:
                  **kwargs
                  ):
         self.update_no = 0
+        self.episode_no = 0
         self.q_net = q_net
         self.target_q_net = deepcopy(q_net)
         self.target_q_net.eval()
         self.optimizer = optimizer
-        assert n_episodes >= n_episodes_annealing, "need to train for more or equal episodes than are used for annealing"
+        self.double_q_flag = double_q_flag
+        self.learning_starts = learning_starts
+        self.online_update_every = online_update_every
+        self.target_update_every = target_update_every
         assert epsilon_start >= epsilon_end, "epsilon should not increase over time"
-        self.n_episodes = n_episodes
-        self.n_episodes_annealing = n_episodes_annealing
+        self.max_steps = max_steps
+        self.max_episodes = max_episodes
+        self.n_steps_annealing = percent_annealing * self.max_steps
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
-        self.epsilon_step_size = (epsilon_start - epsilon_end) / n_episodes_annealing
+        self.epsilon_step_size = (epsilon_start - epsilon_end) / self.n_steps_annealing
         self.replay_buffer_size = replay_buffer_size
         self.batch_size = batch_size
         self.gamma = gamma
-        assert metrics_buffer_size >= max_t, "metrics buffer must be larger or equal to max episode length"
+        #assert metrics_buffer_size >= max_t, "metrics buffer must be larger or equal to max episode length"
         self.metrics_buffer_size = metrics_buffer_size
         self.scores_buffer_size = scores_buffer_size
         self.max_t = max_t
         self.polyak_factor = polyak_factor
+        self.update_polyak_flag = update_polyak_flag
+        self.update_tgt_net_steps = update_tgt_net_steps
         self.device = device
         self.early_stop_score = early_stop_score
         self.network_params_to_sample = network_params_to_sample
+        self.end_proc_flag = None
 
         self.replay_buffer = deque(maxlen=self.replay_buffer_size)
-        self.rewards_buffer = deque(maxlen=self.metrics_buffer_size)
+        self.rewards_buffer = deque(maxlen=self.max_t)
         self.q_value_buffer = deque(maxlen=self.metrics_buffer_size)
         self.scores_buffer = deque(maxlen=self.scores_buffer_size)
 
@@ -85,8 +102,8 @@ class DQN_Trainer:
         self.env = Simulation(environmnet)
         self.writer = SummaryWriter(logdir)
 
-        #TODO: n_episodes, max_t, gamma_
     def _update_q_net(self, batch_size = None, clip_grad = True):
+
         batch_size = batch_size if batch_size else self.batch_size
         if len(self.replay_buffer) < batch_size:
             batch_size = len(self.replay_buffer)
@@ -96,25 +113,30 @@ class DQN_Trainer:
         states = torch.cat([observation.get("state") for observation in sample], dim = 0).to(self.device)
         next_states = torch.cat([observation.get("next_state") for observation in sample], dim = 0).to(self.device)
         actions = torch.tensor([observation.get("action") for observation in sample]).unsqueeze(1).to(self.device)
-        rewards = torch.tensor([observation.get("reward") for observation in sample]).unsqueeze(1).to(self.device)
-
-
+        rewards = torch.tensor([observation.get("reward") for observation in sample]).unsqueeze(1).float().to(self.device)
 
         is_finished_mask = (torch.tensor([observation.get("is_finished") for observation in sample])==False).byte().unsqueeze(1).to(self.device)
 
         q_fitted = self.q_net(states)
-        # max returns a tuple of the max and the indices of the max values; need to also add back the column dim
-        q_next_fitted = self.target_q_net(next_states).max(dim=1)[0].unsqueeze(1)
-        action_mask = torch.zeros_like(q_fitted).scatter_(1, actions, 1.).byte().to(self.device)
+        # in double q learning use the online net to predict argmax and then use the target net to evaluate the value
+        # see section double q learning on pg.2 here: https://arxiv.org/pdf/1509.06461.pdf
+        if self.double_q_flag:
+            self.q_net.eval()
+            with torch.no_grad():
+                argmax_locs = self.q_net(next_states).argmax(dim=1).unsqueeze(1)
+                q_next_fitted = self.target_q_net(next_states)
+                q_next_fitted = q_next_fitted.gather(dim=1, index = argmax_locs) # will be b x 1 tensor
+            self.q_net.train()
+        else:
+            q_next_fitted = self.target_q_net(next_states).max(dim=1)[0].unsqueeze(1)
         # max returns a tuple of the max and the indices of the max values
         avg_q_val = q_fitted.max(dim=1)[0].mean().item()
         avg_tgt_val = q_next_fitted.mean().item()
 
-        q_fitted_for_actions = q_fitted*action_mask
+        q_fitted_for_actions = q_fitted.gather(dim=1, index = actions)
         q_approx = rewards + self.gamma * (q_next_fitted * is_finished_mask) # mask off any is_finished
-        q_approx_for_actions = (q_approx.repeat(1, q_fitted.size(1))*action_mask).detach()
 
-        loss = self.loss(q_fitted_for_actions, q_approx_for_actions)
+        loss = self.loss(q_fitted_for_actions, q_approx.detach())
         self.optimizer.zero_grad()
         loss.backward()
         if clip_grad:
@@ -123,19 +145,23 @@ class DQN_Trainer:
         self.optimizer.step()
 
         self._update_target_q_net()
+        self._step_epsilon()
 
         return loss.detach(), avg_q_val, avg_tgt_val
 
-    def _step_epsilon(self, episode_no: int):
+    def _step_epsilon(self):
 
-        if episode_no < self.n_episodes_annealing:
+        if self.update_no < self.n_steps_annealing:
             self.epsilon-=self.epsilon_step_size
 
-    def _step_log(self, loss, q_value, tgt_value):
+    def _step_log(self, loss, q_value, tgt_value, is_finished):
 
         self.q_value_buffer.append(q_value)
         traling_q_val = np.mean(self.q_value_buffer)
-        trailing_reward = np.mean(self.rewards_buffer)
+
+        buffer_size = len(self.rewards_buffer)
+        rewards_buf = islice(self.rewards_buffer, buffer_size - self.metrics_buffer_size, buffer_size)
+        trailing_reward = np.mean(list(rewards_buf))
 
         self.q_net_sampler.sample(self.q_net)
         # self.tgt_net_sampler.sample(self.target_q_net)
@@ -150,65 +176,107 @@ class DQN_Trainer:
         self.writer.add_scalar('Train/trailing_reward', trailing_reward, self.update_no)
 
         self.writer.add_scalar('Train/q_net_grad_var', q_net_grad_var, self.update_no)
+        self.writer.add_scalar('Train/epsilon', self.epsilon, self.update_no)
         # self.writer.add_scalar('Train/tgt_net_grad_var', tgt_net_grad_var, self.update_no)
 
         self.update_no += 1
+        if is_finished:
+            self.episode_no += 1
 
-    def _process_episode(self, episode_no: int, episode_length: int, print_every = 100):
+    def _validation_episode(self):
+        state = self.env.reset()
+        R = 0
+        with torch.no_grad():
+            for i in range(1, self.max_t+1):
+                self.env.render()
+                action = self.q_net.act(state.to(self.device), epsilon=1e-9)
+                state, reward, is_finished, _ = self.env.step(action)
+                R+=reward
+                if is_finished:
+                    break
+        return R
+
+    def _process_episode(self, episode_length: int, print_every = 100):
 
         buffer_size = len(self.rewards_buffer)
         R = sum(islice(self.rewards_buffer, buffer_size-episode_length, buffer_size))
         self.scores_buffer.append(R)
 
-        self.writer.add_scalar('Episode/score', R, episode_no)
-        self.writer.add_scalar('Episode/trailing_score', np.mean(self.scores_buffer), episode_no)
+        self.writer.add_scalar('Episode/score', R, self.episode_no)
+        self.writer.add_scalar('Episode/trailing_score', np.mean(self.scores_buffer), self.episode_no)
 
-        if episode_no % print_every == 0:
-            print(f"Episode {episode_no}\t Avg Score: {np.mean(self.scores_buffer):.2f}")
 
-        if np.mean(self.scores_buffer) >= self.early_stop_score:
-            print(f"Environment solved in {episode_no - 1} with the avg score of last"
+        if self.episode_no % print_every == 0:
+            R = self._validation_episode()
+            self.writer.add_scalar('Validation/score', R, self.episode_no // print_every)
+            print(f"Episode {self.episode_no}\t Validation Score: {R:.2f}")
+            print(f"Episode {self.episode_no}\t Avg Score: {np.mean(self.scores_buffer):.2f}")
+
+
+            # if self.end_proc_flag:
+            #     self.end_proc_flag.set()
+            #     self.p.join()
+            # self.end_proc_flag = Event()
+            # self.p = Process(target=render_q_net, args=(self.q_net, self.env, self.max_t, self.end_proc_flag))
+            # self.p.start()
+
+
+        if np.mean(self.scores_buffer) >= self.early_stop_score or self.episode_no > self.max_episodes:
+            print(f"Environment solved in {self.episode_no - 1} with the avg score of last"
                   f"{self.scores_buffer_size} episodes as {np.mean(self.scores_buffer)}")
             return True
         else:
             return False
 
     def _update_target_q_net(self):
-        # if (self.update_no + 1) % 5000 == 0:
-        #     for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
-        #         target_param.data.copy_(param.data)
+        if self.update_polyak_flag:
+            for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
+                target_param.data.copy_(
+                    (1 - self.polyak_factor) * param.data + target_param.data * (self.polyak_factor))
 
-        for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
-            target_param.data.copy_((1-self.polyak_factor) * param.data + target_param.data * (self.polyak_factor))
+        else:
+            if (self.update_no + 1) % self.target_update_every == 0:
+                for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
+                    target_param.data.copy_(param.data)
+
 
     def train(self, print_every = 100):
-        for episode_no in tqdm(range(1, self.n_episodes + 1), position = 0, smoothing = 0):
-            state = self.env.reset()
-            for t in range(self.max_t):
-                action = self.q_net.act(state.to(self.device), epsilon=self.epsilon)
-                next_state, reward, is_finished, _ = self.env.step(action)
-                self.rewards_buffer.append(reward)
-                self.replay_buffer.append({"state": state,
-                                           "action": action,
-                                           "reward": reward, #if not is_finished else -reward,
-                                           "next_state": next_state,
-                                           "is_finished": is_finished})
+
+        state = self.env.reset()
+        t=1
+        for step in trange(self.max_steps*self.online_update_every + self.learning_starts, position=0, smoothing=0):
+            action = self.q_net.act(state.to(self.device), epsilon=self.epsilon)
+            next_state, reward, is_finished, _ = self.env.step(action)
+            self.rewards_buffer.append(reward)
+            self.replay_buffer.append({"state": state,
+                                       "action": action,
+                                       "reward": reward, #if not is_finished else -reward,
+                                       "next_state": next_state,
+                                       "is_finished": is_finished})
+            if step > self.learning_starts and step % self.online_update_every == 0:
+                # update q_net, target_q_net, and epsilon
                 loss, avg_q_val, avg_tgt_val = self._update_q_net()
-                self._step_log(loss, avg_q_val, avg_tgt_val)
+                # logs to tensorboard and increments update_no, episode_no
+                self._step_log(loss, avg_q_val, avg_tgt_val, is_finished)
+                if is_finished or t > self.max_t:
+                    early_stop = self._process_episode(episode_length=t, print_every=print_every)
+                    if early_stop:
+                        break
 
-                if is_finished:
-                    break
-                else:
-                    state = next_state
+                if self.episode_no % 3 == 0:
+                    self.env.render()
 
-            # end of episode
-            self._step_epsilon(episode_no)
-            early_stop = self._process_episode(episode_no = episode_no,
-                                               episode_length = t,
-                                               print_every = print_every)
+            if is_finished or t > self.max_t:
+                #early_stop = self._process_episode(episode_length=t, print_every=print_every)
+                state = self.env.reset()
+                t = 1
+            else:
+                state = next_state
+                t+=1
 
-            if early_stop:
-                break
+        self.env.close()
+
+
 
 
 

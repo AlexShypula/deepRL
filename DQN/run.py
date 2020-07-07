@@ -1,9 +1,8 @@
-from DQN.model import DQN_MLP, DQN_MLP_2
+from DQN.model import DQN_MLP, DQN_CNN
 from DQN.trainer import DQN_Trainer
 import torch.optim as optim
 from dataclasses import dataclass, field
 from argparse_dataclass import ArgumentParser
-
 
 @dataclass
 class ParseOptions:
@@ -47,21 +46,67 @@ if __name__ == "__main__":
     # print(parser.parse_args())
     # args = parser.parse_args()
     # run_dqn_cartpole(**vars(args))
-	q_net = DQN_MLP_2(hidden_dim=128)
+	# q_net_cartpole = DQN_MLP(hidden_dim=256)
+	# optimizer_cartpole = optim.Adam(q_net_cartpole.parameters(),
+	# 					   lr=1e-3,
+	# 					   betas=(0.9, 0.999),
+	# 					   eps=1e-08,
+	# 					   weight_decay=0,
+	# 					   amsgrad=False)
+	#
+	# trainer_cartpole = DQN_Trainer(q_net=q_net_cartpole,
+	# 					  optimizer = optimizer,
+	# 					  double_q_flag=False,
+	# 					  max_episodes=1e9,
+	# 					  max_steps=70000,
+	# 					  learning_starts=2000,
+	# 					  online_update_every=1,
+	# 					  target_update_every=5000,
+	# 					  percent_annealing=0.1,
+	# 					  max_t=200,
+	# 					  replay_buffer_size=10000,
+	# 					  batch_size=32,
+	# 					  gamma=0.99,
+	# 					  epsilon_start=1.0,
+	# 					  epsilon_end=0.01,
+	# 					  update_polyak_flag=False,
+	# 					  update_tgt_net_steps=5000, #TODO FIX THIS
+	# 					  environmnet="CartPole-v0",
+	# 					  loss="huber",
+	# 					  early_stop_score=195,
+	# 					  metrics_buffer_size=200,
+	# 					  scores_buffer_size=100)
+	# trainer_cartpole.train(print_every=100)
+	q_net = DQN_CNN(hidden_dim=256, out_dim=6)
+
 	optimizer = optim.Adam(q_net.parameters(),
-						   lr=1e-3,
+						   lr=1e-4,
 						   betas=(0.9, 0.999),
 						   eps=1e-08,
 						   weight_decay=0,
 						   amsgrad=False)
 
 	trainer = DQN_Trainer(q_net=q_net,
-						  polyak_factor=0.9999,
-						  n_episodes=20000,
-						  batch_size=128,
-						  replay_buffer_size=10000,
 						  optimizer=optimizer,
-						  metrics_buffer_size=200,
-						  n_episodes_annealing=8000,
-						  epsilon_end=0.05)
-	trainer.train(print_every=100)
+						  double_q_flag=True,  # False,
+						  max_episodes=1e9,
+						  max_steps=1e7,
+						  learning_starts=2000,  # 10000,
+						  online_update_every=4,
+						  target_update_every=5000,
+						  percent_annealing=0.1,
+						  max_t=10000,
+						  replay_buffer_size=10000,
+						  batch_size=32,
+						  gamma=0.99,
+						  epsilon_start=0.01,  # 1.0,
+						  epsilon_end=0.01,
+						  update_polyak_flag=False,
+						  update_tgt_net_steps=5000,  # TODO FIX THIS
+						  environmnet="Pong-v0",
+						  loss="huber",
+						  early_stop_score=2000,
+						  metrics_buffer_size=100,
+						  scores_buffer_size=100)
+
+	trainer.train(print_every=5)
