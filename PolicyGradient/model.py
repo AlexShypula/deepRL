@@ -42,11 +42,16 @@ class Critic(nn.Module):
         return x
 
 class ActorCritic(nn.Module):
-    def __init__(self, device, state_dim = 4, hidden_dim = 32, policy_out_dim = 2, critic_out_dim = 1):
+    def __init__(self, device, method: str, state_dim = 4, hidden_dim = 32, policy_out_dim = 2, critic_out_dim = 1):
         super(ActorCritic, self).__init__()
         self.policy = Policy(device=device, state_dim=state_dim, hidden_dim=hidden_dim, out_dim=policy_out_dim)
-        self.critic = Critic(device=device, state_dim=state_dim, hidden_dim=hidden_dim, out_dim=critic_out_dim)
+        if method.lower() in ("actor_critic" or "critic_baseline"):
+            self.has_critic = True
+            self.critic = Critic(device=device, state_dim=state_dim, hidden_dim=hidden_dim, out_dim=critic_out_dim)
+        else:
+            self.has_critic = False
     def act(self, state):
         return self.policy.act(state)
     def value(self, state):
+        assert self.has_critic, "The Critic is called, but it is not initialized"
         return self.critic(state)

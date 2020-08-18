@@ -1,8 +1,11 @@
-from model import ActorCritic
-from trainer import EpisodeRunner, PolicyGradientTrainer
+from PolicyGradient.model import ActorCritic
+from PolicyGradient.trainer import EpisodeRunner, PolicyGradientTrainer
 import torch.optim as optim
 from dataclasses import dataclass, field
 from argparse_dataclass import ArgumentParser
+import webbrowser
+import subprocess
+import time
 
 @dataclass
 class ParseOptions:
@@ -25,89 +28,40 @@ class ParseOptions:
 	hidden_dim: int = field(metadata=dict(args=["-hidden_dim"]), default=32)
 	policy_out_dim: int = field(metadata=dict(args=["-policy_out_dim"]), default=2)
 	critic_out_dim: int = field(metadata=dict(args=["-critic_out_dim"]), default=1)
+	logdir: str = field(metadata=dict(args=["-log-dir"]), default=None)
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(ParseOptions)
-    print(parser.parse_args())
-    args = parser.parse_args()
-	'''device, state_dim = 4, hidden_dim = 32, policy_out_dim = 2, critic_out_dim = 1)'''
-	actor_critic = ActorCritic(device=args.device, state_dim=args.state_dim, hidden_dim=args.hidden_dim,
-							   policy_out_dim=args.policy_out_dim, critic_out_dim=args.critic_out_dim)
-	episode_runnder = EpisodeRunner(environment_name=args.environment, max_episode_len=args.max_t,
+	parser = ArgumentParser(ParseOptions)
+	print(parser.parse_args())
+	args = parser.parse_args()
+	actor_critic = ActorCritic(device=args.device, method=args.method, state_dim=args.state_dim,
+							   hidden_dim=args.hidden_dim, policy_out_dim=args.policy_out_dim,
+							   critic_out_dim=args.critic_out_dim)
+	if args.optimizer == "adam":
+		policy_optimizer = optim.Adam(actor_critic.policy.parameters(), lr = args.actor_learning_rate)
+		if args.method.lower() in ("actor_critic", "critic_baseline"):
+			critic_optimizer = optim.Adam(actor_critic.critic.parameters(), lr = args.critic_learning_rate)
+		else:
+			critic_optimizer = None
+	else:
+		raise NotImplementedError
+
+	episode_runner = EpisodeRunner(environment_name=args.environment, max_episode_len=args.max_t,
 									method= args.method, gamma=args.gamma, reward_to_go=True, device=args.device,
 									critic_loss = args.critic_loss)
-	'''class EpisodeRunner:
-    def __init__(self, environment_name: str, max_episode_len: int, method: str, gamma: float, reward_to_go: bool,
-                 device: str, critic_loss: nn.Module = None):'''
 
-	'''PolicyGradientTrainer:
-    def __init__(self, actor_critic: ActorCritic, n_updates: int, gamma: float, method: str, batch_size: int,
-                 policy_optimizer: Optimizer, critic_optimizer: Optimizer = None, render_every: int = None,
-                 parallelize_batch: bool = False, buffer_stats_len=100):'''
+	pg_trainer = PolicyGradientTrainer(actor_critic=actor_critic, n_updates=args.n_updates, gamma=args.gamma,
+									   method=args.method, batch_size=args.batch_size, policy_optimizer=policy_optimizer,
+									   critic_optimizer=critic_optimizer, render_every=args.render_every,
+									   buffer_stats_len=args.buffer_stats_len)
+
+	time.sleep(1)
+	subprocess.Popen(["tensorboard", "--logdir", args.log_dir])
+	time.sleep(1)
+	webbrowser.open("127.0.0.1:6006")
+	pg_trainer.train(episode_runner=episode_runner, n_updates = args.n_updates, batch_size=args.batch_size)
 
 
-	# q_net_cartpole = DQN_MLP(hidden_dim=256)
-	# optimizer_cartpole = optim.Adam(q_net_cartpole.parameters(),
-	# 					   lr=1e-3,
-	# 					   betas=(0.9, 0.999),
-	# 					   eps=1e-08,
-	# 					   weight_decay=0,
-	# 					   amsgrad=False)
-	#
-	# trainer_cartpole = DQN_Trainer(q_net=q_net_cartpole,
-	# 					  optimizer = optimizer,
-	# 					  double_q_flag=False,
-	# 					  max_episodes=1e9,
-	# 					  max_steps=70000,
-	# 					  learning_starts=2000,
-	# 					  online_update_every=1,
-	# 					  target_update_every=5000,
-	# 					  percent_annealing=0.1,
-	# 					  max_t=200,
-	# 					  replay_buffer_size=10000,
-	# 					  batch_size=32,
-	# 					  gamma=0.99,
-	# 					  epsilon_start=1.0,
-	# 					  epsilon_end=0.01,
-	# 					  update_polyak_flag=False,
-	# 					  update_tgt_net_steps=5000, #TODO FIX THIS
-	# 					  environmnet="CartPole-v0",
-	# 					  loss="huber",
-	# 					  early_stop_score=195,
-	# 					  metrics_buffer_size=200,
-	# 					  scores_buffer_size=100)
-	# trainer_cartpole.train(print_every=100)
-	q_net = DQN_CNN(hidden_dim=256, out_dim=6)
 
-	optimizer = optim.Adam(q_net.parameters(),
-						   lr=1e-4,
-						   betas=(0.9, 0.999),
-						   eps=1e-08,
-						   weight_decay=0,
-						   amsgrad=False)
 
-	trainer = DQN_Trainer(q_net=q_net,
-						  optimizer=optimizer,
-						  double_q_flag=True,  # False,
-						  max_episodes=1e9,
-						  max_steps=1e7,
-						  learning_starts=2000,  # 10000,
-						  online_update_every=4,
-						  target_update_every=5000,
-						  percent_annealing=0.1,
-						  max_t=10000,
-						  replay_buffer_size=10000,
-						  batch_size=32,
-						  gamma=0.99,
-						  epsilon_start=0.01,  # 1.0,
-						  epsilon_end=0.01,
-						  update_polyak_flag=False,
-						  update_tgt_net_steps=5000,  # TODO FIX THIS
-						  environmnet="Pong-v0",
-						  loss="huber",
-						  early_stop_score=2000,
-						  metrics_buffer_size=100,
-						  scores_buffer_size=100)
-
-	trainer.train(print_every=5)

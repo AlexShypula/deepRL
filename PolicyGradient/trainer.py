@@ -1,24 +1,17 @@
 import gym
-gym.logger.set_level(40)
+import torch
+import torch.nn as nn
+import numpy as np
 import numpy as np
 from collections import deque
-
-import torch
-torch.manual_seed(42)
-import torch.nn as nn
 from tqdm import tqdm, trange
-from copy import deepcopy
-import random
-from DQN.utils import Simulation, NetworkParamSampler, render_q_net
+from DQN.utils import Simulation, NetworkParamSampler
 from torch.utils.tensorboard import SummaryWriter
-from itertools import islice
-import torch.nn as nn
-from multiprocessing import Process, Event
-from copy import deepcopy
-import numpy as np
 from torch.optim import Optimizer
 from model import ActorCritic
 
+torch.manual_seed(42)
+gym.logger.set_level(40)
 
 class EpisodeRunner:
     def __init__(self, environment_name: str, max_episode_len: int, method: str, gamma: float, reward_to_go: bool,
@@ -128,7 +121,7 @@ class EpisodeRunner:
 class PolicyGradientTrainer:
     def __init__(self, actor_critic: ActorCritic, n_updates: int, gamma: float, method: str, batch_size: int,
                  policy_optimizer: Optimizer, critic_optimizer: Optimizer = None, render_every: int = None,
-                 parallelize_batch: bool = False, buffer_stats_len=100):
+                 parallelize_batch: bool = False, buffer_stats_len=100, logdir = "tensorboard"):
         self.actor_critic = actor_critic
         self.policy_optimizer = policy_optimizer
         self.critic_optimizer = critic_optimizer
@@ -140,6 +133,7 @@ class PolicyGradientTrainer:
             self.value_states = True
         else:
             self.value_states = False
+        self.writer = SummaryWriter(logdir)
 
     def _train_batch(self, episode_runner: EpisodeRunner, render_flag: bool, batch_size: int = None):
         batch_size = batch_size if batch_size else self.batch_size
@@ -188,11 +182,11 @@ class PolicyGradientTrainer:
         # self.writer.add_scalar('Train/tgt_net_grad_var', tgt_net_grad_var, self.update_no)
 
 
-    def train(self, eposode_runner: EpisodeRunner, n_updates: int = None, batch_size = None):
+    def train(self, episode_runner: EpisodeRunner, n_updates: int = None, batch_size = None):
         n_updates = n_updates if n_updates else self.n_updates
         for update_no in trange(1, n_updates+1):
             render_flag = self.render_every != None and (update_no % self.render_every) == 0
-            policy_loss, critic_loss, batch_score, batch_entropy = self._train_batch(episode_runner=eposode_runner,
+            policy_loss, critic_loss, batch_score, batch_entropy = self._train_batch(episode_runner=episode_runner,
                                                                       render_flag=render_flag, batch_size = batch_size)
             self._log_batch(policy_loss, critic_loss, batch_score, batch_entropy, update_no)
 
